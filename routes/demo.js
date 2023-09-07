@@ -2,20 +2,85 @@ const express = require("express");
 const bcryptjs = require("bcryptjs");
 
 const db = require("../data/database");
+const { ObjectId } = require("mongodb");
 
 const router = express.Router();
 
+
+//GET home
 router.get("/", function (req, res) {
   res.render("welcome");
 });
 
+
+
+//GET signup
 router.get("/signup", function (req, res) {
-  res.render("signup");
+  let sessionInputData = req.session.inputData; 
+
+  if(!sessionInputData){  //Checks if this is the first login to the signup page or after an invalid error occurred.
+    sessionInputData = {
+      hasError: false,
+      message: '',
+      email: '',
+      confirmEmail: '',
+      password: ''
+    }
+  }  
+
+  /*
+  After we have used the session we can delete it, and this is because we do not want the wrong details will remain forever.
+  We want it for one request. If, for example, the visitor goes to another page and returns to the signup form - 
+  we want nothing to be written:
+  */
+  req.session.inputData = null;
+
+  res.render("signup", { sessionInputData: sessionInputData });
 });
 
+
+//GET login
 router.get("/login", function (req, res) {
-  res.render("login");
+  let userInput = req.session.inputData;
+  if(!userInput){
+    userInput = {
+      hasError: false,
+      message: "",
+      email: '',
+      password:''
+    };
+  }
+  req.session.inputData = null;
+  res.render("login", {userInput: userInput});
 });
+
+
+//GET profile
+router.get("/profile", function (req, res) {
+  if (!req.session.isAuthenticated) {  //Another option: if(!req.local.userAuth)
+    //if falsy. Another option: if(!req.session.user)
+    return res.status(401).render("401");
+  }
+  res.render("profile");
+});
+
+
+
+//GET admin page
+router.get("/admin", async function (req, res) {
+  if (!req.session.isAuthenticated) {  //if falsy. Another option: if(!req.session.user). Another option: if(!req.local.userAuth)
+    return res.status(401).render("401");
+  }
+
+  const user = await db.getDb().collection('users').findOne({_id: ObjectId(req.session.user.id)});
+
+  if(!user || !user.isAdmin){  //Another option: if(!req.local.userAdmin)
+    return res.status(403).render('403');
+  }
+  res.render("admin");
+});
+
+
 
 //POST signup
 router.post("/signup", async function (req, res) {
@@ -28,19 +93,43 @@ router.post("/signup", async function (req, res) {
     !email ||
     !confirmEmail ||
     !password ||
-    !email.include("@") ||
+    !email.includes("@") ||
     password.trim() < 6 ||
     email !== confirmEmail
   ) {
-    console("Please check your details again, something went wrong");
-    return res.redirect("/signup");
+    /*
+    In POST requests, you should redirect to the page rout and not render the page, because if we renders the page and the client refreshes 
+    the page, a message will pop up asking him to resend a POST request or send a form again. we wan't this.
+    The problem is that all the data that the client entered is deleted and he need enter again. We prefer that in case the input data are not 
+    valid, the client will be returned to the signup page again with the data he entered and change it. We will use session for that as well.
+    */
+    req.session.inputData = {
+      hasError: true,  //error happened
+      message: 'Invalid input - please check your data.',
+      email: email,
+      confirmEmail: confirmEmail,
+      password: password
+    };
+    req.session.save(()=>{
+      res.redirect("/signup");
+    });
+    return;  // the code of the route will not continue execute
   }
 
-  const userExist = db.getDb().collection("users").findOne({ email: email });
+  const userExist = await db.getDb().collection("users").findOne({ email: email });
 
   if (userExist) {
-    console.log("The user exist, try signup with another");
-    return res.redirect("/signup");
+    req.session.inputData = {
+      hasError: true, 
+      message: 'The user exist, try signup with another email',
+      email: email,
+      confirmEmail: confirmEmail,
+      password: password
+    };
+    req.session.save(() => {
+      res.redirect("/signup");
+    });
+    return;
   }
 
   //We need to hash the password before save it, for case that our database is hacked. We need that the hash password can't decoded back but can verify the password.
@@ -55,29 +144,47 @@ router.post("/signup", async function (req, res) {
   res.redirect("/login");
 });
 
+
+
 //POST login - we validation the user in the server side
 router.post("/login", async function (req, res) {
   const userInput = req.body;
   const emailInput = userInput.email;
   const passwordInput = userInput.password;
 
+  const invalid = {
+    hasError: true,  //error happened
+    message: "Could not log you in.",
+    email: emailInput,
+    password: passwordInput
+  };
+
   const user = await db
     .getDb()
     .collection("users")
     .findOne({ email: emailInput }); //if doesn't exist it will return 'null'.
+  
   if (!user) {
-    console.log("User doesn't exist");
-    return res.status(401).render("401");
+    req.session.inputData = invalid;
+    req.session.save(()=>{
+      res.redirect("/login");
+    });
+    return;  // the code of the route will not continue execute
   }
+   
 
   const equalPasswords = await bcryptjs.compare(passwordInput, user.password); //return true or false.
 
   if (!equalPasswords) {
-    console.log("Wrong password");
-    return res.status(401).render("401");
+    req.session.inputData = invalid;
+    req.session.save(()=>{
+      res.redirect("/login");
+    });
+    return; 
   }
 
-  // if succeed:
+  // if succeed to login:
+
   //store data in the session (to see that we have a logged in user):
   req.session.user = { id: user._id, email: user.email };
   req.session.isAuthenticated = true; //Not necessarily.
@@ -92,22 +199,18 @@ router.post("/login", async function (req, res) {
   the session data in the database was updated, because saving to the database, as you'll learned, is an asynchronous task
   that can take a couple of seconds or milliseconds.
   for this exact use case here, we wanna manually call session.save - a built-in method on this session object which will 
-  force that data to be saved to the database.
+  force that data to be saved on the database.
   It takes a callback function which will only be executed by this session package after saving finished.
   */
-  req.session.save(() => {
-    res.redirect("/admin");
+ req.session.save(() => {
+   res.redirect("/"); 
+   
   });
 });
 
-router.get("/admin", function (req, res) {
-  if (!req.session.isAuthenticated) {
-    //if falsy. Another option: if(!req.session.user)
-    return res.status(401).render("401");
-  }
-  res.render("admin");
-});
 
+
+//POST logout
 router.post("/logout", function (req, res) {
   /* 
   We could also delete the entire session object from the database and therefore clear to cookie, but you should think 

@@ -33,11 +33,56 @@ app.use(   // session created for every request, even unauthenticated request.
   })
 );
 
+
+app.use( async (req, res, next) => {
+  const user = req.session.user;
+  const isAuth = req.session.isAuthenticated;
+  console.log('user: '+user + ', isAuth: '+isAuth);
+
+  console.log(
+    'locals.userAuth: '+
+    res.locals.userAuth + 
+    ', locals.userAdmin: '+
+    res.locals.userAdmin
+  );
+
+  if(!user || !isAuth){
+    // app.locals.userAuth = false; 
+    // app.locals.userAdmin = false;
+
+    console.log('next() happen');
+    return next();  
+    /*
+    'next()'- tells express that this request, for which this middleware is being executed here, should be forwarded to 
+    the next middleware or route in line(in this case 'demoRoutes').
+    */
+  }
+  
+  res.locals.userAuth = true; //
+  /*
+  'locals' - set a global values tha will be available throughout this entire request response cycle and these variables are by default available
+  in all your templates page and routes that become after without you passing it into them manually .
+  Because we used in 'res.locals' rather 'app.locals' the variables available only in this request. 
+  */
+
+  const userDoc = await db.getDb().collection('users').findOne({_id: user.id});
+
+  if(userDoc.isAdmin){
+    res.locals.userAdmin = true;
+  }
+
+  next();
+});
+
+
 app.use(demoRoutes);
 
+
 app.use(function (error, req, res, next) {
+  console.log(error);
   res.render("500");
 });
+
 
 db.connectToDatabase().then(function () {
   app.listen(3000);
